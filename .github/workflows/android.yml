@@ -1,0 +1,99 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - coffee-booking-flutter.zip
+      - .github/workflows/android.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Download repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.35.4'
+          channel: stable
+          cache: true
+
+      - name: Unpack the uploaded app ZIP
+        shell: python
+        run: |
+          from pathlib import Path
+          import zipfile
+          archive = Path('coffee-booking-flutter.zip')
+          if not archive.is_file():
+              raise SystemExit('Upload coffee-booking-flutter.zip to the repository root first.')
+          destination = Path('source').resolve()
+          with zipfile.ZipFile(archive) as bundle:
+              for entry in bundle.infolist():
+                  target = (destination / entry.filename).resolve()
+                  if not target.is_relative_to(destination):
+                      raise SystemExit('Unsafe path in ZIP.')
+              bundle.extractall(destination)
+          if not (destination / 'coffee_booking/pubspec.yaml').is_file():
+              raise SystemExit('Use the original coffee-booking-flutter.zip without repacking it.')
+
+      - name: Generate Android project
+        run: |
+          flutter create --no-pub --empty --platforms=android --org=com.muhdsabith --project-name=coffee_booking build_app
+          cp source/coffee_booking/pubspec.yaml build_app/pubspec.yaml
+          cp source/coffee_booking/analysis_options.yaml build_app/analysis_options.yaml
+          cp -R source/coffee_booking/lib/. build_app/lib/
+          cp -R source/coffee_booking/assets build_app/assets
+          cp -R source/coffee_booking/test build_app/test
+          python3 - <<'PY'
+          from pathlib import Path
+          manifest = Path('build_app/android/app/src/main/AndroidManifest.xml')
+          manifest.write_text(manifest.read_text().replace('android:label="coffee_booking"', 'android:label="Brew &amp; Go"'))
+          PY
+
+      - name: Download dependencies
+        working-directory: build_app
+        run: flutter pub get
+
+      - name: Check code
+        working-directory: build_app
+        run: flutter analyze --no-fatal-infos
+
+      - name: Run tests
+        working-directory: build_app
+        run: flutter test
+
+      - name: Build installable test APK
+        working-directory: build_app
+        run: flutter build apk --debug
+
+      - name: Name the APK
+        run: cp build_app/build/app/outputs/flutter-apk/app-debug.apk brew-and-go.apk
+
+      - name: Save APK for download
+        uses: actions/upload-artifact@v4
+        with:
+          name: Brew-and-Go-APK
+          path: brew-and-go.apk
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Show download instructions
+        run: |
+          echo '### Your Android APK is ready' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Download **Brew-and-Go-APK** under Artifacts, extract the ZIP, then open **brew-and-go.apk** on Android.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'This is a debug-signed APK for personal testing. Bookings stay on the device and are not sent to a café.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'A later build may use a different test signing key and require uninstalling the old app first, which clears its local data.' >> "$GITHUB_STEP_SUMMARY"
